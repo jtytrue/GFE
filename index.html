@@ -306,8 +306,12 @@ async function graphPut(path, body, token) {
   });
   if (!r.ok) throw new Error('Graph PUT ' + r.status);
 }
-async function listFolders(itemId, token) {
-  const path = itemId === 'root' ? '/me/drive/root/children?$select=id,name,folder&$top=100' : '/me/drive/items/' + itemId + '/children?$select=id,name,folder&$top=100';
+async function listAllDrives(token) {
+  const data = await graphGet('/me/drives?$select=id,name,driveType&$top=50', token);
+  return data.value || [];
+}
+async function listDriveFolders(driveId, itemId, token) {
+  const path = itemId === 'root' ? '/drives/' + driveId + '/root/children?$select=id,name,folder&$top=100' : '/drives/' + driveId + '/items/' + itemId + '/children?$select=id,name,folder&$top=100';
   const data = await graphGet(path, token);
   return (data.value || []).filter(i => i.folder);
 }
@@ -500,7 +504,8 @@ async function modifyChecklist(sub, token) {
   if (!def.onedrivePath || !token || !sub.projectFolderId) return false;
   const folderId = sub.projectFolderId;
   const relPath = def.onedrivePath;
-  const url = '/me/drive/items/' + folderId + ':/' + relPath + ':/content';
+  const driveId = sub.projectDriveId || 'me/drive';
+  const url = (driveId === 'me/drive' ? '/me/drive/items/' : '/drives/' + driveId + '/items/') + folderId + ':/' + relPath + ':/content';
   const ab = await graphGetBinary(url, token);
   const zip = await JSZip.loadAsync(ab);
   let xml = await zip.file('word/document.xml').async('string');
@@ -558,7 +563,9 @@ async function updateStatusDoc(project, token) {
     type: 'blob',
     mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
   });
-  await graphPut('/me/drive/items/' + project.onedriveFolderId + ':/Site/Site_Observation_Status.docx:/content', blob, token);
+  const sDriveId = project.onedriveDriveId;
+  const sUrl = sDriveId ? '/drives/' + sDriveId + '/items/' + project.onedriveFolderId + ':/Site/Site_Observation_Status.docx:/content' : '/me/drive/items/' + project.onedriveFolderId + ':/Site/Site_Observation_Status.docx:/content';
+  await graphPut(sUrl, blob, token);
   return true;
 }
 
@@ -801,7 +808,9 @@ function ElevationCalc() {
   return /*#__PURE__*/React.createElement("div", {
     style: {
       background: '#0f0f0f',
-      minHeight: '100vh',
+      height: '100%',
+      flex: 1,
+      minHeight: 0,
       fontFamily: "'-apple-system', BlinkMacSystemFont, 'SF Pro Display', sans-serif",
       color: '#fff',
       display: 'flex',
@@ -1271,6 +1280,10 @@ function FormModal(_ref2) {
 }
 
 // ═══════════════════════ FOLDER PICKER ═══════════════════════
+// Stack item shapes:
+//   {type:'drives', name:'All Drives'} — top level
+//   {type:'folder', driveId, id:'root'|itemId, name}   — inside a drive
+
 function FolderPicker(_ref3) {
   let {
     token,
@@ -1278,29 +1291,72 @@ function FolderPicker(_ref3) {
     onClose
   } = _ref3;
   const [stack, setStack] = useState([{
-    id: 'root',
-    name: 'OneDrive'
+    type: 'drives',
+    name: 'All Drives'
   }]);
-  const [folders, setFolders] = useState([]);
+  const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const current = stack[stack.length - 1];
   useEffect(() => {
     setLoading(true);
-    listFolders(current.id, token).then(f => {
-      setFolders(f);
-      setLoading(false);
-    }).catch(() => {
-      setFolders([]);
-      setLoading(false);
-    });
-  }, [current.id]);
+    setItems([]);
+    if (current.type === 'drives') {
+      listAllDrives(token).then(drives => {
+        setItems(drives.map(d => ({
+          _isDrive: true,
+          driveId: d.id,
+          id: 'root',
+          name: d.name,
+          driveType: d.driveType
+        })));
+        setLoading(false);
+      }).catch(() => setLoading(false));
+    } else {
+      listDriveFolders(current.driveId, current.id, token).then(folders => {
+        setItems(folders.map(f => ({
+          ...f,
+          driveId: current.driveId,
+          _isDrive: false
+        })));
+        setLoading(false);
+      }).catch(() => {
+        setItems([]);
+        setLoading(false);
+      });
+    }
+  }, [current.type, current.driveId, current.id]);
+  function navigate(item) {
+    if (item._isDrive) {
+      setStack(s => [...s, {
+        type: 'folder',
+        driveId: item.driveId,
+        id: 'root',
+        name: item.name
+      }]);
+    } else {
+      setStack(s => [...s, {
+        type: 'folder',
+        driveId: item.driveId,
+        id: item.id,
+        name: item.name
+      }]);
+    }
+  }
+  function driveIcon(type) {
+    if (type === 'documentLibrary') return '🏢';
+    if (type === 'business') return '💼';
+    return '☁️';
+  }
+  const breadcrumb = stack.map(s => s.name).join(' › ');
+  const canSelect = current.type === 'folder';
+  const isRoot = stack.length <= 1;
   return /*#__PURE__*/React.createElement("div", {
     className: "screen"
   }, /*#__PURE__*/React.createElement("div", {
     className: "topbar"
   }, /*#__PURE__*/React.createElement("button", {
     className: "back-btn",
-    onClick: () => stack.length > 1 ? setStack(s => s.slice(0, -1)) : onClose()
+    onClick: () => isRoot ? onClose() : setStack(s => s.slice(0, -1))
   }, "\u2039"), /*#__PURE__*/React.createElement("div", {
     style: {
       flex: 1
@@ -1308,40 +1364,58 @@ function FolderPicker(_ref3) {
   }, /*#__PURE__*/React.createElement("div", {
     className: "topbar-title"
   }, "Select Folder"), /*#__PURE__*/React.createElement("div", {
-    className: "topbar-sub"
-  }, stack.map(s => s.name).join(' › ')))), /*#__PURE__*/React.createElement("div", {
+    className: "topbar-sub",
+    style: {
+      maxWidth: '80vw',
+      overflow: 'hidden',
+      textOverflow: 'ellipsis',
+      whiteSpace: 'nowrap'
+    }
+  }, breadcrumb))), /*#__PURE__*/React.createElement("div", {
     className: "content"
-  }, loading && /*#__PURE__*/React.createElement("div", {
+  }, current.type === 'drives' && /*#__PURE__*/React.createElement("div", {
+    style: {
+      padding: '12px 20px 4px',
+      fontSize: 12,
+      color: '#555'
+    }
+  }, "Select a drive to browse. Your company's shared folders appear as document libraries."), loading && /*#__PURE__*/React.createElement("div", {
     style: {
       padding: 40,
       textAlign: 'center',
       color: '#555',
       fontSize: 14
     }
-  }, "Loading\u2026"), !loading && folders.length === 0 && /*#__PURE__*/React.createElement("div", {
+  }, "Loading\u2026"), !loading && items.length === 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       padding: 40,
       textAlign: 'center',
       color: '#555',
       fontSize: 14
     }
-  }, "No subfolders found"), folders.map(f => /*#__PURE__*/React.createElement("div", {
-    key: f.id,
+  }, "No folders found"), items.map(item => /*#__PURE__*/React.createElement("div", {
+    key: (item._isDrive ? 'drive_' : '') + item.id + item.name,
     className: "picker-row",
-    onClick: () => setStack(s => [...s, {
-      id: f.id,
-      name: f.name
-    }])
+    onClick: () => navigate(item)
   }, /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 20
     }
-  }, "\uD83D\uDCC1"), /*#__PURE__*/React.createElement("span", {
+  }, item._isDrive ? driveIcon(item.driveType) : '📁'), /*#__PURE__*/React.createElement("div", {
     style: {
-      flex: 1,
+      flex: 1
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
       fontSize: 15
     }
-  }, f.name), /*#__PURE__*/React.createElement("span", {
+  }, item.name), item._isDrive && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: '#555',
+      marginTop: 2
+    }
+  }, item.driveType === 'documentLibrary' ? 'SharePoint Document Library' : item.driveType === 'personal' ? 'Personal OneDrive' : 'OneDrive for Business')), /*#__PURE__*/React.createElement("span", {
     style: {
       color: '#444',
       fontSize: 20
@@ -1352,10 +1426,19 @@ function FolderPicker(_ref3) {
     }
   })), /*#__PURE__*/React.createElement("div", {
     className: "bottom-bar"
-  }, /*#__PURE__*/React.createElement("button", {
+  }, canSelect ? /*#__PURE__*/React.createElement("button", {
     className: "submit-btn",
-    onClick: () => onSelect(current)
-  }, "Select \"", current.name, "\"")));
+    onClick: () => onSelect({
+      ...current,
+      driveId: current.driveId
+    })
+  }, "Select \"", current.name, "\"") : /*#__PURE__*/React.createElement("button", {
+    className: "submit-btn",
+    style: {
+      opacity: .5
+    },
+    disabled: true
+  }, "Navigate into a folder to select it")));
 }
 
 // ═══════════════════════ CHECKLIST SCREEN ═══════════════════════
@@ -2681,7 +2764,8 @@ function App() {
     setProjects(prev => prev.map(p => p.id === updatedProject.id ? updatedProject : p));
     const sub = {
       ...subData,
-      projectFolderId: updatedProject.onedriveFolderId
+      projectFolderId: updatedProject.onedriveFolderId,
+      projectDriveId: updatedProject.onedriveDriveId
     };
     setLastSub(sub);
     setSyncStatus(null);
@@ -2717,7 +2801,8 @@ function App() {
     const updated = {
       ...currentProject,
       onedriveFolderId: folder.id,
-      onedriveFolder: folder.name
+      onedriveFolder: folder.name,
+      onedriveDriveId: folder.driveId
     };
     await dbPut('projects', updated);
     setCurrentProject(updated);
@@ -2752,12 +2837,7 @@ function App() {
     onCalc: () => setScreen('calc'),
     onObs: () => setScreen('projects')
   }), screen === 'calc' && /*#__PURE__*/React.createElement("div", {
-    style: {
-      background: '#0f0f0f',
-      minHeight: '100vh',
-      display: 'flex',
-      flexDirection: 'column'
-    }
+    className: "screen"
   }, /*#__PURE__*/React.createElement("div", {
     className: "topbar"
   }, /*#__PURE__*/React.createElement("button", {
@@ -2768,7 +2848,10 @@ function App() {
   }, "Elevation Calculator")), /*#__PURE__*/React.createElement("div", {
     style: {
       flex: 1,
-      overflow: 'auto'
+      overflow: 'hidden',
+      display: 'flex',
+      flexDirection: 'column',
+      minHeight: 0
     }
   }, /*#__PURE__*/React.createElement(ElevationCalc, null))), screen === 'projects' && /*#__PURE__*/React.createElement(ProjectsScreen, {
     projects: projects,
