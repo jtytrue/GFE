@@ -141,17 +141,8 @@ input[type=number]{-moz-appearance:textfield;appearance:textfield}
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <!-- JSZip for docx manipulation -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-<!-- MSAL (loaded async - app works without it) -->
-<script>
-(function(){
-  var s=document.createElement('script');
-  s.src='https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js';
-  s.async=true;
-  s.onload=function(){window.__msalLoaded=true;};
-  s.onerror=function(){console.warn('MSAL CDN unavailable — offline mode only');};
-  document.head.appendChild(s);
-})();
-</script>
+<!-- MSAL (sync load so it is available on redirect return) -->
+<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js" onerror="console.warn('MSAL unavailable')"></script>
 <!-- App (pre-compiled, no Babel needed) -->
 <script>
 /* GFE Field App - JSX Source */
@@ -178,12 +169,17 @@ const MSAL_CONFIG = {
 };
 const SCOPES = ['User.Read', 'Files.ReadWrite'];
 let msalApp = null;
-if (typeof msal !== 'undefined') {
-  try {
-    msalApp = new msal.PublicClientApplication(MSAL_CONFIG);
-  } catch (e) {
-    console.warn('MSAL fail', e);
+function getMsalApp() {
+  if (msalApp) return msalApp;
+  if (typeof msal !== 'undefined') {
+    try {
+      msalApp = new msal.PublicClientApplication(MSAL_CONFIG);
+      return msalApp;
+    } catch (e) {
+      console.warn('MSAL fail', e);
+    }
   }
+  return null;
 }
 async function getToken() {
   if (!msalApp) return null;
@@ -1091,11 +1087,32 @@ function FormModal(_ref2) {
     onClose
   } = _ref2;
   const [vals, setVals] = useState(() => Object.fromEntries(fields.map(f => [f.key, f.default || ''])));
+  const [lift, setLift] = useState(0);
+  useEffect(() => {
+    function onVVResize() {
+      if (!window.visualViewport) return;
+      const gap = window.innerHeight - window.visualViewport.height - window.visualViewport.offsetTop;
+      setLift(gap > 50 ? gap : 0);
+    }
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', onVVResize);
+      window.visualViewport.addEventListener('scroll', onVVResize);
+    }
+    return () => {
+      if (window.visualViewport) {
+        window.visualViewport.removeEventListener('resize', onVVResize);
+        window.visualViewport.removeEventListener('scroll', onVVResize);
+      }
+    };
+  }, []);
   return /*#__PURE__*/React.createElement("div", {
     className: "form-modal-overlay",
     onClick: e => e.target === e.currentTarget && onClose()
   }, /*#__PURE__*/React.createElement("div", {
-    className: "form-modal"
+    className: "form-modal",
+    style: {
+      transform: lift > 0 ? `translateY(-${lift}px)` : undefined
+    }
   }, /*#__PURE__*/React.createElement("div", {
     className: "modal-handle"
   }), /*#__PURE__*/React.createElement("div", {
@@ -1265,8 +1282,10 @@ function ChecklistScreen(_ref4) {
   const [remarkModal, setRemarkModal] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [showHeader, setShowHeader] = useState(true);
-  const longTimer = useRef(null);
-  const didLong = useRef(false);
+  const tapTracker = useRef({
+    key: null,
+    time: 0
+  });
   const total = useMemo(() => countItems(clId), [clId]);
   const checked = useMemo(() => countChecked(items), [items]);
   const pct = total > 0 ? checked / total * 100 : 0;
@@ -1288,23 +1307,28 @@ function ChecklistScreen(_ref4) {
       }
     }));
   }
-  function onTouchStart(key) {
-    didLong.current = false;
-    longTimer.current = setTimeout(() => {
+  function onItemClick(key) {
+    const now = Date.now();
+    const prev = tapTracker.current;
+    if (prev.key === key && now - prev.time < 400) {
       var _items$key;
-      didLong.current = true;
+      // Double tap — open remark
+      tapTracker.current = {
+        key: null,
+        time: 0
+      };
       setRemarkModal({
         key,
         current: ((_items$key = items[key]) === null || _items$key === void 0 ? void 0 : _items$key.remark) || ''
       });
-    }, 480);
-  }
-  function onTouchEnd() {
-    clearTimeout(longTimer.current);
-  }
-  function onItemClick(key) {
-    if (!didLong.current) toggleItem(key);
-    didLong.current = false;
+    } else {
+      // Single tap — toggle
+      toggleItem(key);
+      tapTracker.current = {
+        key,
+        time: now
+      };
+    }
   }
   async function handleSubmit() {
     setSubmitting(true);
@@ -1395,8 +1419,6 @@ function ChecklistScreen(_ref4) {
       key: key
     }, /*#__PURE__*/React.createElement("div", {
       className: 'cl-item' + (st.checked ? ' is-checked' : ''),
-      onTouchStart: () => onTouchStart(key),
-      onTouchEnd: onTouchEnd,
       onClick: () => onItemClick(key),
       onContextMenu: e => {
         e.preventDefault();
@@ -1443,7 +1465,7 @@ function ChecklistScreen(_ref4) {
       color: '#333',
       marginTop: 4
     }
-  }, "Long-press any item to add a remark")), remarkModal && /*#__PURE__*/React.createElement(RemarkModal, {
+  }, "Double-tap any item to add a remark")), remarkModal && /*#__PURE__*/React.createElement(RemarkModal, {
     itemKey: remarkModal.key,
     current: remarkModal.current,
     onSave: saveRemark,
@@ -1580,7 +1602,9 @@ function ProjectsScreen(_ref6) {
     onNewGroup,
     user,
     onSignOut,
-    onGoHome
+    onGoHome,
+    onSignIn,
+    authLoading
   } = _ref6;
   const [collapsed, setCollapsed] = useState({});
   const grouped = useMemo(() => {
@@ -1664,7 +1688,7 @@ function ProjectsScreen(_ref6) {
     }
   }, "Site Observations"), user && /*#__PURE__*/React.createElement("div", {
     className: "topbar-sub"
-  }, user.name)), user && /*#__PURE__*/React.createElement("button", {
+  }, user.name)), user ? /*#__PURE__*/React.createElement("button", {
     onClick: onSignOut,
     style: {
       background: 'none',
@@ -1673,7 +1697,21 @@ function ProjectsScreen(_ref6) {
       fontSize: 12,
       cursor: 'pointer'
     }
-  }, "Sign out")), /*#__PURE__*/React.createElement("div", {
+  }, "Sign out") : /*#__PURE__*/React.createElement("button", {
+    onClick: onSignIn,
+    disabled: authLoading,
+    style: {
+      background: '#0078d4',
+      border: 'none',
+      borderRadius: 6,
+      color: 'white',
+      fontSize: 12,
+      fontWeight: 600,
+      padding: '5px 10px',
+      cursor: 'pointer',
+      opacity: authLoading ? .5 : 1
+    }
+  }, authLoading ? '…' : 'Sign in')), /*#__PURE__*/React.createElement("div", {
     className: "content"
   }, /*#__PURE__*/React.createElement("button", {
     className: "new-btn",
@@ -1967,48 +2005,64 @@ function HomeScreen(_ref10) {
       display: 'flex',
       flexDirection: 'column',
       justifyContent: 'center',
-      padding: 24
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: 'flex',
-      gap: 14
+      padding: 28,
+      gap: 16
     }
   }, /*#__PURE__*/React.createElement("div", {
     className: "home-btn",
+    style: {
+      flexDirection: 'row',
+      justifyContent: 'flex-start',
+      gap: 20,
+      padding: '22px 28px'
+    },
     onClick: onCalc
   }, /*#__PURE__*/React.createElement("div", {
     className: "home-btn-icon"
   }, "\uD83D\uDCD0"), /*#__PURE__*/React.createElement("div", {
-    className: "home-btn-label"
-  }, "Calculator"), /*#__PURE__*/React.createElement("div", {
     style: {
-      fontSize: 11,
-      color: '#555',
-      textAlign: 'center'
+      textAlign: 'left'
     }
-  }, "Elevation calc")), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "home-btn-label"
+  }, "Elevation Calculator"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: '#555',
+      marginTop: 3
+    }
+  }, "Add, subtract and convert ft / in / fractions"))), /*#__PURE__*/React.createElement("div", {
     className: "home-btn",
+    style: {
+      flexDirection: 'row',
+      justifyContent: 'flex-start',
+      gap: 20,
+      padding: '22px 28px'
+    },
     onClick: onObs
   }, /*#__PURE__*/React.createElement("div", {
     className: "home-btn-icon"
   }, "\uD83D\uDCCB"), /*#__PURE__*/React.createElement("div", {
-    className: "home-btn-label"
-  }, "Site Obs."), /*#__PURE__*/React.createElement("div", {
     style: {
-      fontSize: 11,
-      color: '#555',
-      textAlign: 'center'
+      textAlign: 'left'
     }
-  }, "Checklists"))), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "home-btn-label"
+  }, "Site Observations"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: '#555',
+      marginTop: 3
+    }
+  }, "Checklists, project status and OneDrive sync"))), /*#__PURE__*/React.createElement("div", {
     style: {
       textAlign: 'center',
-      marginTop: 16
+      marginTop: 4
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
-      color: '#333'
+      color: '#2a2a2a'
     }
   }, "GFE Structural Engineering"))));
 }
@@ -2033,35 +2087,37 @@ function App() {
   const [showNewGroup, setShowNewGroup] = useState(false);
   useEffect(() => {
     const t = setTimeout(() => setShowSplash(false), 3200);
-    if (!msalApp) {
-      setAuthChecked(true);
-      setOfflineMode(true);
-      clearTimeout(t);
-      setTimeout(() => setShowSplash(false), 3200);
-      return;
-    }
-    msalApp.handleRedirectPromise().then(async resp => {
-      let account = resp && resp.account ? resp.account : msalApp.getAllAccounts()[0];
-      if (account) {
-        try {
-          const tr = await msalApp.acquireTokenSilent({
-            scopes: SCOPES,
-            account
-          });
-          setToken(tr.accessToken);
-          const me = await graphGet('/me?$select=displayName,mail', tr.accessToken);
-          setUser({
-            name: me.displayName || me.mail
-          });
-        } catch (e) {
-          console.warn('token fail', e);
-        }
+    // Wait a tick for MSAL CDN to load (it's async), then check
+    setTimeout(async () => {
+      const app = getMsalApp();
+      if (!app) {
+        setAuthChecked(true);
+        return;
       }
-      setAuthChecked(true);
-    }).catch(e => {
-      console.warn('redirect err', e);
-      setAuthChecked(true);
-    });
+      try {
+        const resp = await app.handleRedirectPromise();
+        let account = resp && resp.account ? resp.account : app.getAllAccounts()[0];
+        if (account) {
+          try {
+            const tr = await app.acquireTokenSilent({
+              scopes: SCOPES,
+              account
+            });
+            setToken(tr.accessToken);
+            const me = await graphGet('/me?$select=displayName,mail', tr.accessToken);
+            setUser({
+              name: me.displayName || me.mail
+            });
+          } catch (e) {
+            console.warn('token fail', e);
+          }
+        }
+        setAuthChecked(true);
+      } catch (e) {
+        console.warn('redirect err', e);
+        setAuthChecked(true);
+      }
+    }, 400);
     return () => clearTimeout(t);
   }, []);
   useEffect(() => {
@@ -2082,21 +2138,25 @@ function App() {
     });
   }, [authChecked]);
   async function signIn() {
-    if (!msalApp) return;
+    const app = getMsalApp();
+    if (!app) {
+      alert('Microsoft sign-in is not available. Check your internet connection and try again.');
+      return;
+    }
     setAuthLoading(true);
     try {
-      await msalApp.loginRedirect({
+      await app.loginRedirect({
         scopes: SCOPES
       });
     } catch (e) {
       setAuthLoading(false);
-      setOfflineMode(true);
     }
   }
   async function signOut() {
-    if (msalApp) {
+    const app = getMsalApp();
+    if (app) {
       try {
-        await msalApp.logoutRedirect({
+        await app.logoutRedirect({
           postLogoutRedirectUri: window.location.href
         });
       } catch (e) {}
@@ -2198,13 +2258,9 @@ function App() {
       fontSize: 14
     }
   }, "Loading\u2026");
-  if (msalApp && !user && !offlineMode) {
-    return /*#__PURE__*/React.createElement(AuthScreen, {
-      onSignIn: signIn,
-      onOffline: () => setOfflineMode(true),
-      loading: authLoading
-    });
-  }
+
+  // Auth screen removed — sign in is optional, accessible from projects screen
+
   if (showPicker && token) {
     return /*#__PURE__*/React.createElement(FolderPicker, {
       token: token,
@@ -2248,7 +2304,9 @@ function App() {
     },
     onNewProject: groupId => setNewProjectGroupId(groupId === null ? '' : groupId),
     onNewGroup: () => setShowNewGroup(true),
-    onSignOut: signOut
+    onSignOut: signOut,
+    onSignIn: signIn,
+    authLoading: authLoading
   }), screen === 'project' && currentProject && /*#__PURE__*/React.createElement(ProjectScreen, {
     project: currentProject,
     token: token,
