@@ -142,7 +142,25 @@ input[type=number]{-moz-appearance:textfield;appearance:textfield}
 <!-- JSZip for docx manipulation -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <!-- MSAL (sync load so it is available on redirect return) -->
-<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js" onerror="console.warn('MSAL unavailable')"></script>
+<script>
+(function() {
+  // Try Microsoft CDN first, then npm CDN fallback
+  function loadScript(url, onok, onfail) {
+    var s = document.createElement('script');
+    s.src = url;
+    s.onload = onok;
+    s.onerror = onfail;
+    document.head.appendChild(s);
+  }
+  var primary = 'https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.38.3/dist/index.umd.min.js';
+  var fallback = 'https://unpkg.com/@azure/msal-browser@2.38.3/dist/index.umd.min.js';
+  loadScript(primary, function() { window.__msalLoaded = true; }, function() {
+    loadScript(fallback, function() { window.__msalLoaded = true; }, function() {
+      console.warn('MSAL unavailable on all CDNs — offline mode only');
+    });
+  });
+})();
+</script>
 <!-- App (pre-compiled, no Babel needed) -->
 <script>
 /* GFE Field App - JSX Source */
@@ -2117,7 +2135,7 @@ function App() {
         console.warn('redirect err', e);
         setAuthChecked(true);
       }
-    }, 400);
+    }, 1500);
     return () => clearTimeout(t);
   }, []);
   useEffect(() => {
