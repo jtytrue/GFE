@@ -317,13 +317,16 @@ let _db = null;
 function openDB() {
   return new Promise((res, rej) => {
     if (_db) return res(_db);
-    const req = indexedDB.open('GFEApp3', 1);
+    const req = indexedDB.open('GFEApp3', 2);
     req.onupgradeneeded = e => {
       const d = e.target.result;
       if (!d.objectStoreNames.contains('projects')) d.createObjectStore('projects', {
         keyPath: 'id'
       });
       if (!d.objectStoreNames.contains('groups')) d.createObjectStore('groups', {
+        keyPath: 'id'
+      });
+      if (!d.objectStoreNames.contains('deleted_projects')) d.createObjectStore('deleted_projects', {
         keyPath: 'id'
       });
     };
@@ -1021,29 +1024,27 @@ function ElevationCalc() {
       color: '#555',
       fontSize: 12
     }
-  }, "in"))))), /*#__PURE__*/React.createElement("div", {
-    style: {
-      padding: '16px'
-    }
-  }, /*#__PURE__*/React.createElement("button", {
+  }, "in")))), /*#__PURE__*/React.createElement("button", {
     onClick: addRow,
     style: {
       width: '100%',
-      padding: '18px',
-      borderRadius: 16,
+      padding: '16px',
+      borderRadius: 14,
       border: 'none',
       background: '#e8402a',
       color: '#000',
       fontSize: 17,
       fontWeight: 700,
       cursor: 'pointer',
-      letterSpacing: '0.01em'
+      letterSpacing: '0.01em',
+      marginTop: 4,
+      flexShrink: 0
     }
-  }, "+ Add Value")), /*#__PURE__*/React.createElement("div", {
+  }, "+ Add Value"), /*#__PURE__*/React.createElement("div", {
     style: {
-      height: 8
+      height: 12
     }
-  }));
+  })));
 }
 
 // ═══════════════════════ SPLASH ═══════════════════════
@@ -1687,57 +1688,255 @@ function ProjectScreen(_ref5) {
   })));
 }
 
+// ═══════════════════════ SWIPEABLE ROW ═══════════════════════
+function SwipeableRow(_ref6) {
+  let {
+    children,
+    onDelete,
+    active
+  } = _ref6;
+  const [offset, setOffset] = useState(0);
+  const touchStartX = useRef(0);
+  const touchStartY = useRef(0);
+  const isOpen = useRef(false);
+  const DELETE_W = 82;
+  const MIN_SWIPE = 6;
+  function handleTouchStart(e) {
+    touchStartX.current = e.touches[0].clientX;
+    touchStartY.current = e.touches[0].clientY;
+  }
+  function handleTouchMove(e) {
+    const dx = e.touches[0].clientX - touchStartX.current;
+    const dy = Math.abs(e.touches[0].clientY - touchStartY.current);
+    if (dy > 12 && dy > Math.abs(dx)) return;
+    if (dx < -MIN_SWIPE) e.preventDefault();
+    const base = isOpen.current ? -DELETE_W : 0;
+    const raw = base + dx;
+    setOffset(Math.min(0, Math.max(-DELETE_W, raw)));
+  }
+  function handleTouchEnd() {
+    const snap = offset < -(DELETE_W * 0.45) ? -DELETE_W : 0;
+    isOpen.current = snap < 0;
+    setOffset(snap);
+  }
+  function close() {
+    isOpen.current = false;
+    setOffset(0);
+  }
+  if (!active) return /*#__PURE__*/React.createElement("div", null, children);
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: 'relative',
+      overflow: 'hidden'
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: 'absolute',
+      right: 0,
+      top: 0,
+      bottom: 0,
+      width: DELETE_W,
+      background: '#e8402a',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center'
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      close();
+      onDelete();
+    },
+    style: {
+      background: 'none',
+      border: 'none',
+      color: 'white',
+      fontSize: 13,
+      fontWeight: 700,
+      cursor: 'pointer',
+      width: '100%',
+      height: '100%'
+    }
+  }, "Delete")), /*#__PURE__*/React.createElement("div", {
+    onTouchStart: handleTouchStart,
+    onTouchMove: handleTouchMove,
+    onTouchEnd: handleTouchEnd,
+    style: {
+      transform: `translateX(${offset}px)`,
+      transition: offset === 0 || offset === -DELETE_W ? 'transform .2s ease' : 'none',
+      background: '#0f0f0f',
+      position: 'relative',
+      zIndex: 1
+    }
+  }, children));
+}
+
+// ═══════════════════════ SORTABLE LIST ═══════════════════════
+function useSortableList(items) {
+  const [order, setOrder] = useState(() => items.map((_, i) => i));
+  const touchRef = useRef({
+    active: false,
+    srcIdx: 0,
+    curIdx: 0,
+    startY: 0,
+    rowH: 64
+  });
+  useEffect(() => {
+    setOrder(items.map((_, i) => i));
+  }, [items.length]);
+  const sorted = useMemo(() => order.map(i => items[i]).filter(Boolean), [order, items]);
+  function onHandleTouchStart(e, idx) {
+    e.preventDefault();
+    e.stopPropagation();
+    touchRef.current = {
+      active: true,
+      srcIdx: idx,
+      curIdx: idx,
+      startY: e.touches[0].clientY,
+      rowH: 64
+    };
+  }
+  function onListTouchMove(e) {
+    if (!touchRef.current.active) return;
+    e.preventDefault();
+    const dy = e.touches[0].clientY - touchRef.current.startY;
+    const delta = Math.round(dy / touchRef.current.rowH);
+    const newIdx = Math.max(0, Math.min(order.length - 1, touchRef.current.srcIdx + delta));
+    if (newIdx !== touchRef.current.curIdx) {
+      setOrder(prev => {
+        const arr = [...prev];
+        const [moved] = arr.splice(touchRef.current.curIdx, 1);
+        arr.splice(newIdx, 0, moved);
+        touchRef.current.curIdx = newIdx;
+        return arr;
+      });
+    }
+  }
+  function onListTouchEnd() {
+    touchRef.current.active = false;
+  }
+  return {
+    sorted,
+    order,
+    onHandleTouchStart,
+    onListTouchMove,
+    onListTouchEnd,
+    isActive: () => touchRef.current.active,
+    activeIdx: () => touchRef.current.curIdx
+  };
+}
+
 // ═══════════════════════ PROJECTS LIST ═══════════════════════
-function ProjectsScreen(_ref6) {
+function ProjectsScreen(_ref7) {
   let {
     projects,
     groups,
     onSelect,
     onNewProject,
     onNewGroup,
+    onDeleteProject,
+    onRestoreProject,
     user,
     onSignOut,
     onGoHome,
     onSignIn,
-    authLoading
-  } = _ref6;
+    authLoading,
+    deletedProjects,
+    onSaveOrder
+  } = _ref7;
   const [collapsed, setCollapsed] = useState({});
-  const grouped = useMemo(() => {
-    const byGroup = {};
-    const individual = [];
-    projects.forEach(p => {
-      if (p.groupId) {
-        if (!byGroup[p.groupId]) byGroup[p.groupId] = [];
-        byGroup[p.groupId].push(p);
-      } else individual.push(p);
+  const [editMode, setEditMode] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(null); // project to confirm
+  const [showDeleted, setShowDeleted] = useState(false);
+
+  // Build sorted top-level list: groups + ungrouped projects sorted by sortOrder
+  const topLevel = useMemo(() => {
+    const items = [...groups.map(g => ({
+      ...g,
+      _type: 'group',
+      _key: 'g_' + g.id
+    })), ...projects.filter(p => !p.groupId).map(p => ({
+      ...p,
+      _type: 'project',
+      _key: 'p_' + p.id
+    }))];
+    return items.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+  }, [groups, projects]);
+
+  // Sortable hook for top-level list
+  const topSortable = useSortableList(topLevel);
+
+  // Per-group sortable lists
+  const groupSortables = {};
+  groups.forEach(g => {
+    const gps = projects.filter(p => p.groupId === g.id).sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+    groupSortables[g.id] = useSortableList(gps); // eslint-disable-line
+  });
+  function commitTopOrder(sorted) {
+    sorted.forEach((item, idx) => {
+      if (item._type === 'group') onSaveOrder('group', item.id, idx * 10);else onSaveOrder('project', item.id, idx * 10);
     });
-    return {
-      byGroup,
-      individual
-    };
-  }, [projects]);
-  function obsLabel(project) {
-    const obs = project.completedObservations || {};
+  }
+  function obsLabel(p) {
+    const obs = p.completedObservations || {};
     const done = STATUS_ROWS.filter(r => obs[r.id]).length;
     if (done === 0) return 'All pending';
     if (done === STATUS_ROWS.length) return '✓ Complete';
     return done + '/' + STATUS_ROWS.length + ' done';
   }
-  function obsColor(project) {
-    const obs = project.completedObservations || {};
+  function obsColor(p) {
+    const obs = p.completedObservations || {};
     const done = STATUS_ROWS.filter(r => obs[r.id]).length;
-    if (done === 0) return '#555';
-    if (done === STATUS_ROWS.length) return '#4caf50';
-    return '#e8402a';
+    return done === 0 ? '#555' : done === STATUS_ROWS.length ? '#4caf50' : '#e8402a';
   }
-  function ProjectRow(_ref7) {
+  function DragHandle(_ref8) {
     let {
-      p
-    } = _ref7;
+      onStart
+    } = _ref8;
     return /*#__PURE__*/React.createElement("div", {
-      className: "list-row",
-      onClick: () => onSelect(p)
+      onTouchStart: onStart,
+      onClick: e => e.stopPropagation(),
+      style: {
+        padding: '0 14px 0 4px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 4,
+        alignItems: 'center',
+        justifyContent: 'center',
+        cursor: 'grab',
+        opacity: .45,
+        flexShrink: 0
+      }
+    }, [0, 1, 2].map(i => /*#__PURE__*/React.createElement("div", {
+      key: i,
+      style: {
+        width: 16,
+        height: 2,
+        background: '#888',
+        borderRadius: 1
+      }
+    })));
+  }
+  function ProjectRow(_ref9) {
+    let {
+      p,
+      sortable,
+      idx,
+      inGroup
+    } = _ref9;
+    return /*#__PURE__*/React.createElement(SwipeableRow, {
+      onDelete: () => setConfirmDelete(p),
+      active: !editMode
     }, /*#__PURE__*/React.createElement("div", {
+      className: "list-row",
+      onClick: () => !editMode && onSelect(p),
+      style: {
+        paddingLeft: editMode ? 4 : 20,
+        opacity: editMode && (sortable === null || sortable === void 0 ? void 0 : sortable.activeIdx()) === idx ? .7 : 1,
+        background: editMode && (sortable === null || sortable === void 0 ? void 0 : sortable.activeIdx()) === idx ? '#1a1a1a' : undefined
+      }
+    }, editMode && sortable && /*#__PURE__*/React.createElement(DragHandle, {
+      onStart: e => sortable.onHandleTouchStart(e, idx)
+    }), /*#__PURE__*/React.createElement("div", {
       style: {
         flex: 1
       }
@@ -1749,9 +1948,9 @@ function ProjectsScreen(_ref6) {
         marginTop: 3,
         color: obsColor(p)
       }
-    }, obsLabel(p))), /*#__PURE__*/React.createElement("div", {
+    }, obsLabel(p))), !editMode && /*#__PURE__*/React.createElement("div", {
       className: "chevron"
-    }, "\u203A"));
+    }, "\u203A")));
   }
   return /*#__PURE__*/React.createElement("div", {
     className: "screen"
@@ -1783,7 +1982,34 @@ function ProjectsScreen(_ref6) {
     }
   }, "Site Observations"), user && /*#__PURE__*/React.createElement("div", {
     className: "topbar-sub"
-  }, user.name)), user ? /*#__PURE__*/React.createElement("button", {
+  }, user.name)), editMode ? /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      setEditMode(false);
+      commitTopOrder(topSortable.sorted);
+    },
+    style: {
+      background: '#e8402a',
+      border: 'none',
+      borderRadius: 6,
+      color: 'white',
+      fontSize: 12,
+      fontWeight: 600,
+      padding: '5px 10px',
+      cursor: 'pointer'
+    }
+  }, "Done") : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
+    onClick: () => setEditMode(true),
+    style: {
+      background: 'none',
+      border: '1px solid #333',
+      borderRadius: 6,
+      color: '#aaa',
+      fontSize: 12,
+      padding: '5px 10px',
+      cursor: 'pointer',
+      marginRight: 6
+    }
+  }, "Edit"), user ? /*#__PURE__*/React.createElement("button", {
     onClick: onSignOut,
     style: {
       background: 'none',
@@ -1806,9 +2032,17 @@ function ProjectsScreen(_ref6) {
       cursor: 'pointer',
       opacity: authLoading ? .5 : 1
     }
-  }, authLoading ? '…' : 'Sign in')), /*#__PURE__*/React.createElement("div", {
-    className: "content"
-  }, /*#__PURE__*/React.createElement("button", {
+  }, authLoading ? '…' : 'Sign in'))), /*#__PURE__*/React.createElement("div", {
+    className: "content",
+    onTouchMove: editMode ? topSortable.onListTouchMove : undefined,
+    onTouchEnd: editMode ? () => {
+      topSortable.onListTouchEnd();
+      commitTopOrder(topSortable.sorted);
+    } : undefined,
+    style: {
+      touchAction: editMode ? 'pan-y' : 'auto'
+    }
+  }, !editMode && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
     className: "new-btn",
     onClick: () => onNewProject(null)
   }, /*#__PURE__*/React.createElement("span", {
@@ -1825,49 +2059,68 @@ function ProjectsScreen(_ref6) {
     style: {
       fontSize: 14
     }
-  }, "\u229E"), " New Client Group"), groups.map(g => {
-    const gProjects = grouped.byGroup[g.id] || [];
-    const isCollapsed = collapsed[g.id];
-    return /*#__PURE__*/React.createElement("div", {
-      key: g.id
-    }, /*#__PURE__*/React.createElement("div", {
-      className: "group-header",
-      onClick: () => setCollapsed(c => ({
-        ...c,
-        [g.id]: !c[g.id]
-      }))
-    }, /*#__PURE__*/React.createElement("span", {
-      className: "group-label"
-    }, g.name), /*#__PURE__*/React.createElement("span", {
-      className: "group-count"
-    }, gProjects.length, " ", gProjects.length === 1 ? 'project' : 'projects'), /*#__PURE__*/React.createElement("span", {
-      style: {
-        color: '#444',
-        fontSize: 16,
-        marginLeft: 8
-      }
-    }, isCollapsed ? '›' : '⌄')), !isCollapsed && /*#__PURE__*/React.createElement("div", null, gProjects.map(p => /*#__PURE__*/React.createElement(ProjectRow, {
-      key: p.id,
-      p: p
-    })), /*#__PURE__*/React.createElement("div", {
-      className: "list-row",
-      style: {
-        justifyContent: 'center'
-      },
-      onClick: () => onNewProject(g.id)
-    }, /*#__PURE__*/React.createElement("span", {
-      style: {
-        color: '#e8402a',
-        fontSize: 13,
-        fontWeight: 600
-      }
-    }, "+ Add to ", g.name))));
-  }), grouped.individual.length > 0 && /*#__PURE__*/React.createElement("div", {
-    className: "section-label"
-  }, "Projects"), grouped.individual.map(p => /*#__PURE__*/React.createElement(ProjectRow, {
-    key: p.id,
-    p: p
-  })), projects.length === 0 && /*#__PURE__*/React.createElement("div", {
+  }, "\u229E"), " New Client Group")), topSortable.sorted.map((item, topIdx) => {
+    if (item._type === 'group') {
+      const g = item;
+      const gs = groupSortables[g.id];
+      const isCollapsed = collapsed[g.id];
+      return /*#__PURE__*/React.createElement("div", {
+        key: g._key
+      }, /*#__PURE__*/React.createElement("div", {
+        className: "group-header",
+        onClick: () => !editMode && setCollapsed(c => ({
+          ...c,
+          [g.id]: !c[g.id]
+        })),
+        style: {
+          paddingLeft: editMode ? 4 : 20
+        }
+      }, editMode && /*#__PURE__*/React.createElement(DragHandle, {
+        onStart: e => topSortable.onHandleTouchStart(e, topIdx)
+      }), /*#__PURE__*/React.createElement("span", {
+        className: "group-label"
+      }, g.name), /*#__PURE__*/React.createElement("span", {
+        className: "group-count"
+      }, ((gs === null || gs === void 0 ? void 0 : gs.sorted) || []).length, " ", ((gs === null || gs === void 0 ? void 0 : gs.sorted) || []).length === 1 ? 'project' : 'projects'), !editMode && /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: '#444',
+          fontSize: 16,
+          marginLeft: 8
+        }
+      }, isCollapsed ? '›' : '⌄')), !isCollapsed && gs && /*#__PURE__*/React.createElement("div", {
+        onTouchMove: editMode ? gs.onListTouchMove : undefined,
+        onTouchEnd: editMode ? () => {
+          gs.onListTouchEnd();
+          gs.sorted.forEach((p, i) => onSaveOrder('project', p.id, i * 10));
+        } : undefined
+      }, gs.sorted.map((p, gi) => /*#__PURE__*/React.createElement(ProjectRow, {
+        key: p.id,
+        p: p,
+        sortable: editMode ? gs : null,
+        idx: gi,
+        inGroup: true
+      })), !editMode && /*#__PURE__*/React.createElement("div", {
+        className: "list-row",
+        style: {
+          justifyContent: 'center'
+        },
+        onClick: () => onNewProject(g.id)
+      }, /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: '#e8402a',
+          fontSize: 13,
+          fontWeight: 600
+        }
+      }, "+ Add to ", g.name))));
+    } else {
+      return /*#__PURE__*/React.createElement(ProjectRow, {
+        key: item._key,
+        p: item,
+        sortable: editMode ? topSortable : null,
+        idx: topIdx
+      });
+    }
+  }), projects.length === 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       padding: '60px 40px',
       textAlign: 'center'
@@ -1884,21 +2137,95 @@ function ProjectsScreen(_ref6) {
       color: '#444',
       lineHeight: 1.6
     }
-  }, "No projects yet.", /*#__PURE__*/React.createElement("br", null), "Tap + New Project to get started.")), /*#__PURE__*/React.createElement("div", {
+  }, "No projects yet.", /*#__PURE__*/React.createElement("br", null), "Tap + New Project to get started.")), deletedProjects.length > 0 && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    className: "section-label",
+    style: {
+      cursor: 'pointer'
+    },
+    onClick: () => setShowDeleted(v => !v)
+  }, "Recently Deleted (", deletedProjects.length, ") ", showDeleted ? '⌄' : '›'), showDeleted && deletedProjects.map(dp => {
+    const hrs = Math.floor((Date.now() - dp.deletedAt) / 3600000);
+    const remaining = 24 - hrs;
+    return /*#__PURE__*/React.createElement("div", {
+      key: dp.id,
+      className: "list-row",
+      style: {
+        opacity: .6
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        flex: 1
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "row-title"
+    }, dp.name), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: '#666',
+        marginTop: 2
+      }
+    }, "Deleted \xB7 ", remaining, "h left to restore")), /*#__PURE__*/React.createElement("button", {
+      onClick: () => onRestoreProject(dp),
+      style: {
+        background: '#1a2a1a',
+        border: '1px solid #4caf5055',
+        borderRadius: 6,
+        color: '#4caf50',
+        fontSize: 11,
+        fontWeight: 700,
+        padding: '4px 10px',
+        cursor: 'pointer'
+      }
+    }, "Restore"));
+  })), /*#__PURE__*/React.createElement("div", {
     style: {
       height: 40
     }
-  })));
+  })), confirmDelete && /*#__PURE__*/React.createElement("div", {
+    className: "modal-overlay",
+    onClick: () => setConfirmDelete(null)
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "modal-sheet"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "modal-handle"
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 700,
+      marginBottom: 6
+    }
+  }, "Delete Project?"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: '#888',
+      marginBottom: 20
+    }
+  }, "\"", confirmDelete.name, "\" will be moved to Recently Deleted for 24 hours, then permanently removed."), /*#__PURE__*/React.createElement("div", {
+    className: "modal-actions"
+  }, /*#__PURE__*/React.createElement("button", {
+    className: "modal-btn btn-cancel",
+    onClick: () => setConfirmDelete(null)
+  }, "Cancel"), /*#__PURE__*/React.createElement("button", {
+    className: "modal-btn",
+    style: {
+      background: '#e8402a',
+      color: 'white'
+    },
+    onClick: () => {
+      onDeleteProject(confirmDelete);
+      setConfirmDelete(null);
+    }
+  }, "Delete")))));
 }
 
 // ═══════════════════════ SUCCESS SCREEN ═══════════════════════
-function SuccessScreen(_ref8) {
+function SuccessScreen(_ref0) {
   let {
     sub,
     project,
     syncStatus,
     onDone
-  } = _ref8;
+  } = _ref0;
   const def = CHECKLISTS[sub.checklistId];
   const total = countItems(sub.checklistId);
   const checked = countChecked(sub.items);
@@ -1946,11 +2273,11 @@ function SuccessScreen(_ref8) {
       marginBottom: 20,
       textAlign: 'left'
     }
-  }, [['Date', sub.header.date], ['By', sub.header.by], ['Lot', sub.header.lot], ['Temp.', sub.header.temp]].filter(_ref9 => {
-    let [, v] = _ref9;
+  }, [['Date', sub.header.date], ['By', sub.header.by], ['Lot', sub.header.lot], ['Temp.', sub.header.temp]].filter(_ref1 => {
+    let [, v] = _ref1;
     return v;
-  }).map(_ref0 => {
-    let [l, v] = _ref0;
+  }).map(_ref10 => {
+    let [l, v] = _ref10;
     return /*#__PURE__*/React.createElement("div", {
       key: l,
       style: {
@@ -1986,12 +2313,12 @@ function SuccessScreen(_ref8) {
 }
 
 // ═══════════════════════ AUTH SCREEN ═══════════════════════
-function AuthScreen(_ref1) {
+function AuthScreen(_ref11) {
   let {
     onSignIn,
     onOffline,
     loading
-  } = _ref1;
+  } = _ref11;
   return /*#__PURE__*/React.createElement("div", {
     className: "screen",
     style: {
@@ -2064,11 +2391,11 @@ function AuthScreen(_ref1) {
 }
 
 // ═══════════════════════ HOME SCREEN ═══════════════════════
-function HomeScreen(_ref10) {
+function HomeScreen(_ref12) {
   let {
     onCalc,
     onObs
-  } = _ref10;
+  } = _ref12;
   return /*#__PURE__*/React.createElement("div", {
     className: "screen"
   }, /*#__PURE__*/React.createElement("div", {
@@ -2180,6 +2507,7 @@ function App() {
   const [showPicker, setShowPicker] = useState(false);
   const [newProjectGroupId, setNewProjectGroupId] = useState(undefined);
   const [showNewGroup, setShowNewGroup] = useState(false);
+  const [deletedProjects, setDeletedProjects] = useState([]);
   useEffect(() => {
     const t = setTimeout(() => setShowSplash(false), 3200);
     // Wait a tick for MSAL CDN to load (it's async), then check
@@ -2218,6 +2546,14 @@ function App() {
   useEffect(() => {
     if (!authChecked) return;
     dbGetAll('projects').then(ps => setProjects(ps || []));
+    dbGetAll('deleted_projects').then(async ds => {
+      const now = Date.now();
+      const fresh = (ds || []).filter(d => now - d.deletedAt < 86400000);
+      const stale = (ds || []).filter(d => now - d.deletedAt >= 86400000);
+      setDeletedProjects(fresh);
+      // Purge items older than 24h
+      for (const s of stale) await dbDelete('deleted_projects', s.id);
+    });
     dbGetAll('groups').then(gs => {
       const list = gs || [];
       if (list.length === 0) {
@@ -2267,6 +2603,7 @@ function App() {
       groupId: vals.groupId || null,
       onedriveFolderId: null,
       completedObservations: {},
+      sortOrder: Date.now(),
       createdAt: new Date().toISOString()
     };
     await dbPut('projects', p);
@@ -2275,10 +2612,55 @@ function App() {
   async function createGroup(vals) {
     const g = {
       id: genId(),
-      name: vals.name.trim()
+      name: vals.name.trim(),
+      sortOrder: Date.now()
     };
     await dbPut('groups', g);
     setGroups(prev => [...prev, g]);
+  }
+  async function deleteProject(p) {
+    // Move to deleted_projects
+    await dbPut('deleted_projects', {
+      ...p,
+      deletedAt: Date.now()
+    });
+    await dbDelete('projects', p.id);
+    setProjects(prev => prev.filter(x => x.id !== p.id));
+    setDeletedProjects(prev => [...prev, {
+      ...p,
+      deletedAt: Date.now()
+    }]);
+  }
+  async function restoreProject(dp) {
+    const p = {
+      ...dp
+    };
+    delete p.deletedAt;
+    await dbPut('projects', p);
+    await dbDelete('deleted_projects', dp.id);
+    setProjects(prev => [...prev, p]);
+    setDeletedProjects(prev => prev.filter(x => x.id !== dp.id));
+  }
+  async function saveOrder(type, id, sortOrder) {
+    if (type === 'group') {
+      const g = groups.find(x => x.id === id);
+      if (!g) return;
+      const updated = {
+        ...g,
+        sortOrder
+      };
+      await dbPut('groups', updated);
+      setGroups(prev => prev.map(x => x.id === id ? updated : x));
+    } else {
+      const p = projects.find(x => x.id === id);
+      if (!p) return;
+      const updated = {
+        ...p,
+        sortOrder
+      };
+      await dbPut('projects', updated);
+      setProjects(prev => prev.map(x => x.id === id ? updated : x));
+    }
   }
   async function handleSubmit(subData) {
     const def = CHECKLISTS[subData.checklistId];
@@ -2401,7 +2783,11 @@ function App() {
     onNewGroup: () => setShowNewGroup(true),
     onSignOut: signOut,
     onSignIn: signIn,
-    authLoading: authLoading
+    authLoading: authLoading,
+    onDeleteProject: deleteProject,
+    onRestoreProject: restoreProject,
+    onSaveOrder: saveOrder,
+    deletedProjects: deletedProjects
   }), screen === 'project' && currentProject && /*#__PURE__*/React.createElement(ProjectScreen, {
     project: currentProject,
     token: token,
