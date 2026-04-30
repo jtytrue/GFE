@@ -141,6 +141,7 @@ input[type=number]{-moz-appearance:textfield;appearance:textfield}
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <!-- JSZip for docx manipulation -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
 <!-- MSAL (sync load so it is available on redirect return) -->
 <!-- MSAL v2.38.3 inlined -->
 <script>/*! @azure/msal-browser v2.38.3 2023-10-27 */
@@ -239,7 +240,7 @@ const MSAL_CONFIG = {
     storeAuthStateInCookie: false
   }
 };
-const SCOPES = ['User.Read', 'Files.ReadWrite'];
+const SCOPES = ['User.Read', 'Files.ReadWrite', 'Sites.Read.All'];
 let msalApp = null;
 function getMsalApp() {
   if (msalApp) return msalApp;
@@ -307,28 +308,52 @@ async function graphPut(path, body, token) {
   if (!r.ok) throw new Error('Graph PUT ' + r.status);
 }
 async function listAllDrives(token) {
-  // Get personal OneDrive drives
+  // Get personal OneDrive + any synced drives
   const myDrives = await graphGet('/me/drives?$select=id,name,driveType&$top=50', token).catch(() => ({
     value: []
   }));
-  // Also search SharePoint sites the user has access to
-  const sites = await graphGet('/sites?search=*&$select=id,displayName,name&$top=50', token).catch(() => ({
-    value: []
-  }));
-  // Get document libraries for each SharePoint site
-  const siteDrives = [];
-  for (const site of (sites.value || []).slice(0, 10)) {
-    const sdr = await graphGet('/sites/' + site.id + '/drives?$select=id,name,driveType&$top=20', token).catch(() => ({
-      value: []
-    }));
-    for (const d of sdr.value || []) {
-      siteDrives.push({
-        ...d,
-        _siteName: site.displayName || site.name,
-        _siteId: site.id
-      });
+
+  // Search all SharePoint sites (requires Sites.Read.All)
+  let siteDrives = [];
+  try {
+    const sites = await graphGet('/sites?search=*&$select=id,displayName,name&$top=100', token);
+    for (const site of (sites.value || []).slice(0, 20)) {
+      const sdr = await graphGet('/sites/' + site.id + '/drives?$select=id,name,driveType&$top=10', token).catch(() => ({
+        value: []
+      }));
+      for (const d of sdr.value || []) {
+        // Only include document libraries (not personal drives)
+        if (d.driveType === 'documentLibrary') {
+          siteDrives.push({
+            ...d,
+            _siteName: site.displayName || site.name,
+            _siteId: site.id
+          });
+        }
+      }
     }
+  } catch (e) {
+    console.warn('Sites search failed (may need Sites.Read.All permission):', e.message);
   }
+
+  // Also try followed sites
+  try {
+    const followed = await graphGet('/me/followedSites?$select=id,displayName,name&$top=50', token);
+    for (const site of followed.value || []) {
+      const sdr = await graphGet('/sites/' + site.id + '/drives?$select=id,name,driveType&$top=10', token).catch(() => ({
+        value: []
+      }));
+      for (const d of sdr.value || []) {
+        if (d.driveType === 'documentLibrary') {
+          const exists = siteDrives.some(x => x.id === d.id);
+          if (!exists) siteDrives.push({
+            ...d,
+            _siteName: site.displayName || site.name
+          });
+        }
+      }
+    }
+  } catch (e) {}
   return [...(myDrives.value || []), ...siteDrives];
 }
 async function listDriveFolders(driveId, itemId, token) {
@@ -342,7 +367,7 @@ let _db = null;
 function openDB() {
   return new Promise((res, rej) => {
     if (_db) return res(_db);
-    const req = indexedDB.open('GFEApp3', 2);
+    const req = indexedDB.open('GFEApp3', 3);
     req.onupgradeneeded = e => {
       const d = e.target.result;
       if (!d.objectStoreNames.contains('projects')) d.createObjectStore('projects', {
@@ -405,7 +430,7 @@ const CHECKLISTS = {
     icon: '📐',
     statusKey: 'footing_observation',
     statusLabel: 'Footing Observation',
-    onedrivePath: 'Site/Foundation/Spread_Footing_Foundation_Observation_Checklist.docx',
+    onedrivePath: 'Site/Foundation/Spread_Footing_Foundation_Observation_Checklist.pdf',
     placeholderOffset: 0,
     sections: [{
       title: 'Footings',
@@ -419,7 +444,7 @@ const CHECKLISTS = {
     icon: '🧱',
     statusKey: 'foundation_wall_observation',
     statusLabel: 'Foundation Wall Observation',
-    onedrivePath: 'Site/Foundation/Spread_Footing_Foundation_Observation_Checklist.docx',
+    onedrivePath: 'Site/Foundation/Spread_Footing_Foundation_Observation_Checklist.pdf',
     placeholderOffset: 12,
     sections: [{
       title: 'Foundation Wall',
@@ -433,7 +458,7 @@ const CHECKLISTS = {
     icon: '⬜',
     statusKey: 'structural_slab_observation',
     statusLabel: 'Structural Slab Observation',
-    onedrivePath: 'Site/Foundation/Basement_Structural_Slab_Observation_Checklist.docx',
+    onedrivePath: 'Site/Foundation/Basement_Structural_Slab_Observation_Checklist.pdf',
     placeholderOffset: 0,
     sections: [{
       title: 'Structural Slab',
@@ -447,7 +472,7 @@ const CHECKLISTS = {
     icon: '🔩',
     statusKey: 'foundation_wall_observation',
     statusLabel: 'Foundation Wall Observation',
-    onedrivePath: 'Site/Foundation/Drilled_Pier_Foundation_Wall_Observation_Checklist.docx',
+    onedrivePath: 'Site/Foundation/Drilled_Pier_Foundation_Wall_Observation_Checklist.pdf',
     placeholderOffset: 0,
     sections: [{
       title: 'Drilled Pier Foundation Wall',
@@ -461,7 +486,7 @@ const CHECKLISTS = {
     icon: '🔧',
     statusKey: 'exterior_sheathing',
     statusLabel: 'Exterior Sheathing',
-    onedrivePath: 'Site/Sheathing/Shear_Observation_Checklist_doc.docx',
+    onedrivePath: 'Site/Sheathing/Shear_Observation_Checklist.pdf',
     placeholderOffset: 0,
     sections: [{
       title: 'General',
@@ -547,72 +572,103 @@ function initItems(clId) {
 async function modifyChecklist(sub, token) {
   const def = CHECKLISTS[sub.checklistId];
   if (!def.onedrivePath || !token || !sub.projectFolderId) return false;
+  const driveId = sub.projectDriveId;
   const folderId = sub.projectFolderId;
   const relPath = def.onedrivePath;
-  const driveId = sub.projectDriveId || 'me/drive';
-  const url = (driveId === 'me/drive' ? '/me/drive/items/' : '/drives/' + driveId + '/items/') + folderId + ':/' + relPath + ':/content';
+  const url = driveId ? '/drives/' + driveId + '/items/' + folderId + ':/' + relPath + ':/content' : '/me/drive/items/' + folderId + ':/' + relPath + ':/content';
   const ab = await graphGetBinary(url, token);
-  const zip = await JSZip.loadAsync(ab);
-  let xml = await zip.file('word/document.xml').async('string');
+  const {
+    PDFDocument
+  } = PDFLib;
+  const pdfDoc = await PDFDocument.load(ab);
+  const form = pdfDoc.getForm();
+
+  // Fill header fields
   const h = sub.header;
-  const reps = {
-    '{{DATE}}': h.date || '',
-    '{{LOT}}': h.lot || '',
-    '{{SUBDIVISION}}': h.subdivision || '',
-    '{{TEMP}}': h.temp || '',
-    '{{BY}}': h.by || ''
-  };
-  const offset = def.placeholderOffset || 0;
+  [['date', h.date], ['lot', h.lot], ['subdivision', h.subdivision], ['temp', h.temp], ['by', h.by]].forEach(_ref => {
+    let [name, val] = _ref;
+    try {
+      form.getTextField(name).setText(val || '');
+    } catch (e) {}
+  });
+
+  // Fill checklist items — global index across all sections
+  let globalIdx = 0;
   def.sections.forEach((s, si) => {
     s.items.forEach((_, ii) => {
-      const prevItems = def.sections.slice(0, si).reduce((a, x) => a + x.items.length, 0);
-      const n = offset + prevItems + ii;
       const st = sub.items[si + '_' + ii] || {};
-      reps['{{CHK_' + n + '}}'] = st.checked ? '\u2713' : '';
-      reps['{{RMK_' + n + '}}'] = (st.remark || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      try {
+        const chk = form.getCheckBox('chk_' + globalIdx);
+        if (st.checked) chk.check();else chk.uncheck();
+      } catch (e) {}
+      try {
+        form.getTextField('rmk_' + globalIdx).setText(st.remark || '');
+      } catch (e) {}
+      globalIdx++;
     });
   });
-  for (const [k, v] of Object.entries(reps)) {
-    xml = xml.split(k).join(v);
-  }
-  zip.file('word/document.xml', xml);
-  const blob = await zip.generateAsync({
-    type: 'blob',
-    mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  const bytes = await pdfDoc.save();
+  const blob = new Blob([bytes], {
+    type: 'application/pdf'
   });
-  await graphPut(url, blob, token);
+  const r = await fetch('https://graph.microsoft.com/v1.0' + url, {
+    method: 'PUT',
+    headers: {
+      Authorization: 'Bearer ' + token,
+      'Content-Type': 'application/pdf'
+    },
+    body: blob
+  });
+  if (!r.ok) throw new Error('Upload failed: ' + r.status);
   return true;
 }
 async function updateStatusDoc(project, token) {
   if (!project.onedriveFolderId || !token) return false;
   const obs = project.completedObservations || {};
-
-  // Download the existing template and do placeholder replacement
-  // This preserves the original formatting (checkboxes, underlines, Report/Letter, etc.)
   const sDriveId = project.onedriveDriveId;
-  const sUrl = sDriveId ? '/drives/' + sDriveId + '/items/' + project.onedriveFolderId + ':/Site/Site_Observation_Status.docx:/content' : '/me/drive/items/' + project.onedriveFolderId + ':/Site/Site_Observation_Status.docx:/content';
+  const sUrl = sDriveId ? '/drives/' + sDriveId + '/items/' + project.onedriveFolderId + ':/Site/Site_Observation_Status.pdf:/content' : '/me/drive/items/' + project.onedriveFolderId + ':/Site/Site_Observation_Status.pdf:/content';
   try {
+    // Download the PDF template
     const ab = await graphGetBinary(sUrl, token);
-    const zip = await JSZip.loadAsync(ab);
-    let xml = await zip.file('word/document.xml').async('string');
-
-    // Replace placeholders for each observation row
+    // Use pdf-lib to fill AcroForm fields
+    const {
+      PDFDocument
+    } = PDFLib;
+    const pdfDoc = await PDFDocument.load(ab);
+    const form = pdfDoc.getForm();
     STATUS_ROWS.forEach(r => {
       const d = obs[r.id];
-      // Invisible placeholder text (white color in template) → real value
-      xml = xml.split('{{CHK_' + r.key + '}}').join(d ? '\u2713' : '\u25a1');
-      xml = xml.split('{{DATE_' + r.key + '}}').join(d ? d.date || '' : '');
-      xml = xml.split('{{ENG_' + r.key + '}}').join(d ? d.by || '' : '');
+      try {
+        const chk = form.getCheckBox('chk_' + r.key);
+        if (d) chk.check();else chk.uncheck();
+      } catch (e) {}
+      try {
+        const dateF = form.getTextField('date_' + r.key);
+        dateF.setText(d ? d.date || '' : '');
+      } catch (e) {}
+      try {
+        const engF = form.getTextField('eng_' + r.key);
+        engF.setText(d ? d.by || '' : '');
+      } catch (e) {}
     });
-    zip.file('word/document.xml', xml);
-    const blob = await zip.generateAsync({
-      type: 'blob',
-      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    const bytes = await pdfDoc.save();
+    const blob = new Blob([bytes], {
+      type: 'application/pdf'
     });
-    await graphPut(sUrl, blob, token);
+    // Upload back
+    const putUrl = sUrl.replace(':/content', ':/content');
+    const r2 = await fetch('https://graph.microsoft.com/v1.0' + sUrl, {
+      method: 'PUT',
+      headers: {
+        Authorization: 'Bearer ' + token,
+        'Content-Type': 'application/pdf'
+      },
+      body: blob
+    });
+    if (!r2.ok) throw new Error('Upload failed: ' + r2.status);
     return true;
   } catch (e) {
-    console.warn('Status doc update failed:', e.message);
+    console.warn('Status PDF update failed:', e.message);
     return false;
   }
 }
@@ -1160,13 +1216,13 @@ function Splash() {
 }
 
 // ═══════════════════════ REMARK MODAL ═══════════════════════
-function RemarkModal(_ref) {
+function RemarkModal(_ref2) {
   let {
     itemKey,
     current,
     onSave,
     onClose
-  } = _ref;
+  } = _ref2;
   const [text, setText] = useState(current || '');
   const [lift, setLift] = useState(0);
   useEffect(() => {
@@ -1232,13 +1288,13 @@ function RemarkModal(_ref) {
 }
 
 // ═══════════════════════ FORM MODAL ═══════════════════════
-function FormModal(_ref2) {
+function FormModal(_ref3) {
   let {
     title,
     fields,
     onSave,
     onClose
-  } = _ref2;
+  } = _ref3;
   const [vals, setVals] = useState(() => Object.fromEntries(fields.map(f => [f.key, f.default || ''])));
   const [lift, setLift] = useState(0);
   useEffect(() => {
@@ -1332,12 +1388,12 @@ function FormModal(_ref2) {
 //   {type:'drives', name:'All Drives'} — top level
 //   {type:'folder', driveId, id:'root'|itemId, name}   — inside a drive
 
-function FolderPicker(_ref3) {
+function FolderPicker(_ref4) {
   let {
     token,
     onSelect,
     onClose
-  } = _ref3;
+  } = _ref4;
   const [stack, setStack] = useState([{
     type: 'drives',
     name: 'All Drives'
@@ -1496,13 +1552,13 @@ function FolderPicker(_ref3) {
 }
 
 // ═══════════════════════ CHECKLIST SCREEN ═══════════════════════
-function ChecklistScreen(_ref4) {
+function ChecklistScreen(_ref5) {
   let {
     project,
     clId,
     onBack,
     onSubmit
-  } = _ref4;
+  } = _ref5;
   const def = CHECKLISTS[clId];
   const [header, setHeader] = useState({
     date: today(),
@@ -1707,14 +1763,14 @@ function ChecklistScreen(_ref4) {
 }
 
 // ═══════════════════════ PROJECT SCREEN ═══════════════════════
-function ProjectScreen(_ref5) {
+function ProjectScreen(_ref6) {
   let {
     project,
     onBack,
     onStartChecklist,
     onLinkFolder,
     token
-  } = _ref5;
+  } = _ref6;
   const obs = project.completedObservations || {};
   return /*#__PURE__*/React.createElement("div", {
     className: "screen"
@@ -1826,12 +1882,12 @@ function ProjectScreen(_ref5) {
 }
 
 // ═══════════════════════ SWIPEABLE ROW ═══════════════════════
-function SwipeableRow(_ref6) {
+function SwipeableRow(_ref7) {
   let {
     children,
     onDelete,
     active
-  } = _ref6;
+  } = _ref7;
   const [offset, setOffset] = useState(0);
   const touchStartX = useRef(0);
   const touchStartY = useRef(0);
@@ -1912,7 +1968,7 @@ function SwipeableRow(_ref6) {
 // No hooks-in-loop; drag state is a single ref
 
 // ═══════════════════════ PROJECTS LIST ═══════════════════════
-function ProjectsScreen(_ref7) {
+function ProjectsScreen(_ref8) {
   let {
     projects,
     groups,
@@ -1928,7 +1984,7 @@ function ProjectsScreen(_ref7) {
     authLoading,
     deletedProjects,
     onSaveOrder
-  } = _ref7;
+  } = _ref8;
   const [collapsed, setCollapsed] = useState({});
   const [editMode, setEditMode] = useState(false);
   const [confirmArchive, setConfirmArchive] = useState(null);
@@ -1983,44 +2039,49 @@ function ProjectsScreen(_ref7) {
     return order.map(id => map[id]).filter(Boolean);
   }
 
-  // Drag handlers
-  function onDragStart(e, type, id, idx, listRef) {
+  // Drag handlers — reliable touch-based reorder
+  function onDragStart(e, id) {
+    // Called from DragHandle with the _key of the item being dragged
     e.preventDefault();
     e.stopPropagation();
     dragRef.current = {
       active: true,
-      type,
       id,
       startY: e.touches[0].clientY,
-      curY: e.touches[0].clientY,
-      idx
+      lastY: e.touches[0].clientY
     };
     setDraggingId(id);
   }
-  function onListMove(e, items, setOrder, getKey) {
+  function onListMove(e, orderedKeys, setOrder) {
     if (!dragRef.current.active) return;
     e.preventDefault();
-    const dy = e.touches[0].clientY - dragRef.current.startY;
-    const newIdx = Math.max(0, Math.min(items.length - 1, Math.round(dragRef.current.idx + dy / 56)));
-    if (newIdx !== dragRef.current.curIdx) {
-      dragRef.current.curIdx = newIdx;
-      const keys = items.map(getKey);
-      const fromIdx = keys.indexOf(dragRef.current.id);
-      if (fromIdx >= 0) {
-        const arr = [...keys];
-        const [moved] = arr.splice(fromIdx, 1);
-        arr.splice(newIdx, 0, moved);
-        setOrder(arr);
-      }
-    }
+    const y = e.touches[0].clientY;
+    const dy = y - dragRef.current.lastY;
+    if (Math.abs(dy) < 2) return; // debounce tiny movements
+    dragRef.current.lastY = y;
+    const keys = [...orderedKeys];
+    const fromIdx = keys.indexOf(dragRef.current.id);
+    if (fromIdx < 0) return;
+    const direction = dy > 0 ? 1 : -1;
+    const toIdx = Math.max(0, Math.min(keys.length - 1, fromIdx + direction));
+    if (toIdx === fromIdx) return;
+    const arr = [...keys];
+    arr.splice(fromIdx, 1);
+    arr.splice(toIdx, 0, dragRef.current.id);
+    setOrder(arr);
   }
   function onDragEnd(type, gId) {
     dragRef.current.active = false;
     setDraggingId(null);
+    // Persist the new order
     if (type === 'top') {
-      sortedTop.forEach((item, i) => onSaveOrder(item._type, item.id, i * 10));
+      localTopOrder.forEach((key, i) => {
+        const item = topLevel.find(x => x._key === key);
+        if (item) onSaveOrder(item._type, item.id, i * 10);
+      });
     } else if (type === 'group' && gId) {
-      getGroupSorted(gId).forEach((p, i) => onSaveOrder('project', p.id, i * 10));
+      const order = localGroupOrders[gId] || (groupProjects[gId] || []).map(p => p.id);
+      order.forEach((id, i) => onSaveOrder('project', id, i * 10));
     }
   }
   function obsLabel(p) {
@@ -2035,10 +2096,10 @@ function ProjectsScreen(_ref7) {
     const done = STATUS_ROWS.filter(r => obs[r.id]).length;
     return done === 0 ? '#555' : done === STATUS_ROWS.length ? '#4caf50' : '#e8402a';
   }
-  function DragHandle(_ref8) {
+  function DragHandle(_ref9) {
     let {
       onStart
-    } = _ref8;
+    } = _ref9;
     return /*#__PURE__*/React.createElement("div", {
       onTouchStart: onStart,
       onClick: e => e.stopPropagation(),
@@ -2076,13 +2137,13 @@ function ProjectsScreen(_ref7) {
       }
     }));
   }
-  function ProjectRow(_ref9) {
+  function ProjectRow(_ref0) {
     let {
       p,
       onArchive,
       dragId,
       onDragStart
-    } = _ref9;
+    } = _ref0;
     const isDragging = dragId === p.id;
     return /*#__PURE__*/React.createElement(SwipeableRow, {
       onDelete: () => onArchive(p),
@@ -2096,7 +2157,7 @@ function ProjectsScreen(_ref7) {
         opacity: isDragging ? 0.6 : 1
       }
     }, editMode && /*#__PURE__*/React.createElement(DragHandle, {
-      onStart: e => onDragStart(e, p.id)
+      onStart: e => onDragStart(e, 'p_' + p.id)
     }), /*#__PURE__*/React.createElement("div", {
       style: {
         flex: 1
@@ -2192,7 +2253,7 @@ function ProjectsScreen(_ref7) {
     }
   }, authLoading ? '…' : 'Sign in'))), /*#__PURE__*/React.createElement("div", {
     className: "content",
-    onTouchMove: editMode ? e => onListMove(e, sortedTop, setLocalTopOrder, i => i._key) : undefined,
+    onTouchMove: editMode ? e => onListMove(e, localTopOrder, setLocalTopOrder) : undefined,
     onTouchEnd: editMode ? () => onDragEnd('top') : undefined,
     style: {
       touchAction: editMode ? 'pan-y' : 'auto'
@@ -2236,9 +2297,7 @@ function ProjectsScreen(_ref7) {
           paddingLeft: editMode ? 0 : 20
         }
       }, editMode && /*#__PURE__*/React.createElement(DragHandle, {
-        onStart: e => {
-          onDragStart(e, 'top', g._key, topIdx, null);
-        }
+        onStart: e => onDragStart(e, g._key)
       }), /*#__PURE__*/React.createElement("span", {
         className: "group-label"
       }, g.name), /*#__PURE__*/React.createElement("span", {
@@ -2251,11 +2310,11 @@ function ProjectsScreen(_ref7) {
         }
       }, isCollapsed ? '›' : '⌄')), !isCollapsed && /*#__PURE__*/React.createElement("div", {
         onTouchMove: editMode ? e => {
-          const order = getGroupSorted(g.id);
-          onListMove(e, order, newOrder => setLocalGroupOrders(prev => ({
+          const curOrder = localGroupOrders[g.id] || (groupProjects[g.id] || []).map(p => p.id);
+          onListMove(e, curOrder, newOrder => setLocalGroupOrders(prev => ({
             ...prev,
             [g.id]: newOrder
-          })), p => p.id);
+          })));
         } : undefined,
         onTouchEnd: editMode ? () => onDragEnd('group', g.id) : undefined
       }, gSorted.map(p => /*#__PURE__*/React.createElement(ProjectRow, {
@@ -2263,7 +2322,7 @@ function ProjectsScreen(_ref7) {
         p: p,
         dragId: draggingId,
         onArchive: setConfirmArchive,
-        onDragStart: (e, id) => onDragStart(e, 'group', id, gSorted.indexOf(p), null)
+        onDragStart: (e, id) => onDragStart(e, id)
       })), !editMode && /*#__PURE__*/React.createElement("div", {
         className: "list-row",
         style: {
@@ -2283,7 +2342,7 @@ function ProjectsScreen(_ref7) {
         p: item,
         dragId: draggingId,
         onArchive: setConfirmArchive,
-        onDragStart: (e, id) => onDragStart(e, 'top', id, topIdx, null)
+        onDragStart: (e, id) => onDragStart(e, id)
       });
     }
   }), projects.length === 0 && /*#__PURE__*/React.createElement("div", {
@@ -2381,13 +2440,13 @@ function ProjectsScreen(_ref7) {
 }
 
 // ═══════════════════════ SUCCESS SCREEN ═══════════════════════
-function SuccessScreen(_ref0) {
+function SuccessScreen(_ref1) {
   let {
     sub,
     project,
     syncStatus,
     onDone
-  } = _ref0;
+  } = _ref1;
   const def = CHECKLISTS[sub.checklistId];
   const total = countItems(sub.checklistId);
   const checked = countChecked(sub.items);
@@ -2435,11 +2494,11 @@ function SuccessScreen(_ref0) {
       marginBottom: 20,
       textAlign: 'left'
     }
-  }, [['Date', sub.header.date], ['By', sub.header.by], ['Lot', sub.header.lot], ['Temp.', sub.header.temp]].filter(_ref1 => {
-    let [, v] = _ref1;
+  }, [['Date', sub.header.date], ['By', sub.header.by], ['Lot', sub.header.lot], ['Temp.', sub.header.temp]].filter(_ref10 => {
+    let [, v] = _ref10;
     return v;
-  }).map(_ref10 => {
-    let [l, v] = _ref10;
+  }).map(_ref11 => {
+    let [l, v] = _ref11;
     return /*#__PURE__*/React.createElement("div", {
       key: l,
       style: {
@@ -2475,12 +2534,12 @@ function SuccessScreen(_ref0) {
 }
 
 // ═══════════════════════ AUTH SCREEN ═══════════════════════
-function AuthScreen(_ref11) {
+function AuthScreen(_ref12) {
   let {
     onSignIn,
     onOffline,
     loading
-  } = _ref11;
+  } = _ref12;
   return /*#__PURE__*/React.createElement("div", {
     className: "screen",
     style: {
@@ -2553,11 +2612,11 @@ function AuthScreen(_ref11) {
 }
 
 // ═══════════════════════ HOME SCREEN ═══════════════════════
-function HomeScreen(_ref12) {
+function HomeScreen(_ref13) {
   let {
     onCalc,
     onObs
-  } = _ref12;
+  } = _ref13;
   return /*#__PURE__*/React.createElement("div", {
     className: "screen"
   }, /*#__PURE__*/React.createElement("div", {
